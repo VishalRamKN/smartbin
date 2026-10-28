@@ -1,0 +1,15 @@
+[Unit]
+Description=SmartBin hub (ESP32 serial -> SQLite -> dashboard/cloud)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=__USER__
+WorkingDirectory=__REPO__
+EnvironmentFile=__REPO__/hub/hub.env
+ExecStart=__REPO__/.venv/bin/python __REPO__/hub/hub.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

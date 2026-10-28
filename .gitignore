@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+firmware/.pio/
+data/
+hub/hub.env
+docs/_site/

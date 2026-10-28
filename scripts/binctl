@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Command-line control for the SmartBin hub.
+
+  binctl state            latest reading for each bin
+  binctl watch            live view, refreshes every 2 s (Ctrl+C to quit)
+  binctl <esp32 command>  e.g. binctl tare | binctl cal 200 | binctl open 2 | binctl lid 1 open 95
+"""
+import json
+import os
+import sys
+import time
+import urllib.request
+
+HUB = os.environ.get("SMARTBIN_HUB", "http://localhost:8080")
+
+
+def get(path):
+    with urllib.request.urlopen(HUB + path, timeout=5) as r:
+        return json.load(r)
+
+
+def show(s):
+    d = s["device"]
+    print(f"ESP32 {'connected' if d['connected'] else 'NOT connected'} on {d['port']}")
+    for b, r in sorted(s["bins"].items()):
+        f = "--" if r["fill_pct"] is None else f"{r['fill_pct']:5.1f} %"
+        dist = "--" if r["dist_mm"] is None else f"{r['dist_mm']:.1f} mm"
+        w = "--" if r["weight_g"] is None else f"{r['weight_g']:.1f} g"
+        print(f"  {b}  {r['status']:<10} fill {f:>8}  dist {dist:>9}  weight {w:>9}  lid {r['lid']:<6} ({r['age_s']} s ago)")
+    if not s["bins"]:
+        print("  no readings yet")
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__)
+        return
+    try:
+        if args[0] == "state":
+            show(get("/api/state"))
+        elif args[0] == "watch":
+            while True:
+                s = get("/api/state")
+                print("\033[2J\033[H", end="")
+                show(s)
+                for line in s["log"][-5:]:
+                    print("   ", line["text"])
+                time.sleep(2)
+        else:
+            body = json.dumps({"cmd": " ".join(args)}).encode()
+            req = urllib.request.Request(HUB + "/api/cmd", data=body, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    reply = json.load(r)
+            except urllib.error.HTTPError as e:
+                reply = json.load(e)
+            print(("OK  " if reply.get("ok") else "FAILED  ") + reply.get("msg", ""))
+    except urllib.error.URLError:
+        print("Hub not running. Check: sudo systemctl status smartbin-hub")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

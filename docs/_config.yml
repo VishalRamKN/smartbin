@@ -1,0 +1,5 @@
+title: SmartBin
+description: Dual-sensor smart garbage bin (ultrasonic + load cell) with an ESP32, a Raspberry Pi 5 hub and a live dashboard
+theme: jekyll-theme-cayman
+exclude:
+  - make_wiring_svg.py

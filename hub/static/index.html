@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SmartBin Hub</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --ink:#1c2230; --muted:#6b7385; --line:#e3e6ec;
+          --ok:#2e9d5b; --fill:#d99a1e; --full:#d64545; --check:#7a4fd6; --idle:#8a90a0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171d; --card:#1d2129; --ink:#e7e9ee; --muted:#9aa1b2; --line:#2c313b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 system-ui, sans-serif; }
+  header { padding:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; }
+  h1 { font-size:20px; margin:0; }
+  .pill { font-size:13px; padding:3px 10px; border-radius:99px; background:var(--card); border:1px solid var(--line); }
+  main { padding:0 16px 24px; display:grid; gap:16px; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); max-width:1100px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  .top { display:flex; justify-content:space-between; align-items:baseline; }
+  .id { font-weight:600; font-size:17px; }
+  .status { font-weight:700; font-size:13px; padding:3px 10px; border-radius:6px; color:#fff; background:var(--idle); }
+  .bar { height:26px; background:var(--line); border-radius:6px; overflow:hidden; margin:14px 0 6px; }
+  .bar > div { height:100%; width:0; background:var(--ok); transition:width .4s; }
+  .big { font-size:30px; font-weight:700; }
+  dl { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; margin:12px 0; font-size:14px; }
+  dt { color:var(--muted); }
+  dd { margin:0; font-variant-numeric:tabular-nums; }
+  canvas { width:100%; height:90px; display:block; }
+  .btns { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  button { font:inherit; font-size:14px; padding:6px 12px; border-radius:8px; border:1px solid var(--line);
+           background:var(--bg); color:var(--ink); cursor:pointer; }
+  button:hover { border-color:var(--muted); }
+  pre { font-size:12px; overflow:auto; max-height:220px; margin:0; white-space:pre-wrap; color:var(--muted); }
+  .muted { color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SmartBin Hub</h1>
+  <span id="conn" class="pill">connecting…</span>
+</header>
+<main>
+  <div id="bins" style="display:contents"></div>
+  <section class="card">
+    <div class="top"><span class="id">Device</span><span id="fw" class="muted"></span></div>
+    <dl id="dev"></dl>
+    <div class="btns">
+      <button onclick="cmd('info')">Refresh info</button>
+      <button onclick="raw()">Send command…</button>
+    </div>
+    <p class="muted" id="reply"></p>
+    <pre id="log"></pre>
+  </section>
+</main>
+<script>
+const COLORS = { OK:'--ok', FILLING:'--fill', FULL:'--full', CHECK:'--check' };
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmt = (v, unit, d=1) => v === null || v === undefined ? '—' : v.toFixed(d) + ' ' + unit;
+
+function card(id, r) {
+  let el = document.getElementById('bin-' + id);
+  if (!el) {
+    const n = id.endsWith('01') ? 1 : 2;
+    el = document.createElement('section');
+    el.className = 'card'; el.id = 'bin-' + id;
+    el.innerHTML = `
+      <div class="top"><span class="id">${id}${n === 2 ? ' <span class="muted">(dummy: no load cell, no IR)</span>' : ''}</span>
+        <span class="status"></span></div>
+      <div class="bar"><div></div></div>
+      <div class="big"></div>
+      <dl></dl>
+      <canvas></canvas>
+      <div class="btns">
+        <button onclick="cmd('open ${n}')">Open lid</button>
+        <button onclick="cmd('close ${n}')">Close lid</button>
+        ${n === 1 ? `<button onclick="cmd('tare')">Tare</button><button onclick="cal()">Calibrate…</button>` : ''}
+      </div>`;
+    document.getElementById('bins').appendChild(el);
+  }
+  const st = el.querySelector('.status');
+  st.textContent = r.status.replace('_', ' ');
+  st.style.background = css(COLORS[r.status] || '--idle');
+  const fill = r.fill_pct ?? 0;
+  const bar = el.querySelector('.bar > div');
+  bar.style.width = fill + '%';
+  bar.style.background = css(fill >= 80 ? '--full' : fill >= 50 ? '--fill' : '--ok');
+  el.querySelector('.big').textContent = r.fill_pct === null ? '—' : fill.toFixed(0) + ' %';
+  el.querySelector('dl').innerHTML = `
+    <dt>Distance</dt><dd>${fmt(r.dist_mm, 'mm')}</dd>
+    <dt>Weight</dt><dd>${id.endsWith('01') ? fmt(r.weight_g, 'g') : 'no load cell'}</dd>
+    <dt>Density</dt><dd>${r.density_g_l !== undefined ? r.density_g_l + ' g/L (CHECK below ' + r.rho_min_g_l + ')' : '—'}</dd>
+    <dt>Lid</dt><dd>${r.lid}${r.hand ? ' · hand detected' : ''}</dd>
+    <dt>Updated</dt><dd>${r.age_s} s ago</dd>`;
+  return el;
+}
+
+async function drawHistory(id, el) {
+  const pts = await (await fetch('/api/history?bin=' + id + '&minutes=60')).json();
+  const c = el.querySelector('canvas'), dpr = devicePixelRatio || 1;
+  c.width = c.clientWidth * dpr; c.height = c.clientHeight * dpr;
+  const g = c.getContext('2d'), W = c.width, H = c.height, now = Date.now() / 1000;
+  g.clearRect(0, 0, W, H);
+  g.strokeStyle = css('--line'); g.lineWidth = dpr;
+  [0, 50, 80, 100].forEach(p => { const y = H - p / 100 * (H - 4) - 2; g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); });
+  g.strokeStyle = css('--ok'); g.lineWidth = 2 * dpr; g.beginPath();
+  let first = true;
+  for (const [ts, fill] of pts) {
+    if (fill === null) { first = true; continue; }
+    const x = W - (now - ts) / 3600 * W, y = H - fill / 100 * (H - 4) - 2;
+    first ? g.moveTo(x, y) : g.lineTo(x, y); first = false;
+  }
+  g.stroke();
+}
+
+let tick = 0;
+async function refresh() {
+  try {
+    const s = await (await fetch('/api/state')).json();
+    const conn = document.getElementById('conn');
+    conn.textContent = s.device.connected ? 'ESP32 connected · ' + s.device.port : 'ESP32 not connected';
+    conn.style.color = css(s.device.connected ? '--ok' : '--full');
+    for (const id of Object.keys(s.bins).sort()) {
+      const el = card(id, s.bins[id]);
+      if (tick % 5 === 0) drawHistory(id, el);
+    }
+    const i = s.device.info || {};
+    document.getElementById('fw').textContent = i.fw ? 'firmware ' + i.fw : '';
+    document.getElementById('dev').innerHTML = `
+      <dt>Load cell</dt><dd>${i.hx_alive === undefined ? '—' : i.hx_alive ? 'HX711 responding' : 'HX711 NOT responding'}</dd>
+      <dt>Calibrated</dt><dd>${i.calibrated === undefined ? '—' : i.calibrated ? 'yes (' + i.hx_scale.toFixed(2) + ' counts/g)' : 'no, run Tare then Calibrate'}</dd>
+      <dt>Lid angles</dt><dd>${i.lid1 ? 'bin 1 ' + i.lid1.join('→') + '°, bin 2 ' + i.lid2.join('→') + '°' : '—'}</dd>
+      <dt>Bin height</dt><dd>${i.h_mm ? 'H ' + i.h_mm + ' mm, full at ' + i.dfull_mm + ' mm' : '—'}</dd>
+      <dt>Cloud</dt><dd>${s.cloud ? 'forwarding' : 'off (local only)'}</dd>`;
+    document.getElementById('log').textContent =
+      s.log.map(l => new Date(l.ts * 1000).toLocaleTimeString() + '  ' + l.text).reverse().join('\n');
+  } catch (e) {
+    document.getElementById('conn').textContent = 'hub not reachable';
+  }
+  tick++;
+}
+
+async function cmd(text) {
+  const out = document.getElementById('reply');
+  out.textContent = '→ ' + text + ' …';
+  try {
+    const r = await (await fetch('/api/cmd', { method: 'POST', body: JSON.stringify({ cmd: text }) })).json();
+    out.textContent = '→ ' + text + ': ' + (r.ok ? 'OK ' : 'FAILED ') + (r.msg || '');
+  } catch (e) { out.textContent = '→ ' + text + ': hub not reachable'; }
+  refresh();
+}
+function cal() {
+  const g = prompt('Put a known weight on the empty bucket of bin 1 (after Tare). How many grams?', '200');
+  if (g) cmd('cal ' + g);
+}
+function raw() {
+  const t = prompt('Command for the ESP32 (help, info, lid 1 open 100, servo 2 45, temp 30 …)');
+  if (t) cmd(t);
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
